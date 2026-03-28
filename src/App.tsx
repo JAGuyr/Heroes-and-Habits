@@ -384,6 +384,17 @@ export default function App() {
 
   const xpProgress = activeHero ? ((activeHero.xp % XP_PER_LEVEL) / XP_PER_LEVEL * 100) : 0;
 
+  const [authError, setAuthError] = useState<{ code: string; message: string; domain: string } | null>(null);
+
+  const handleSignIn = async () => {
+    setAuthError(null);
+    try {
+      await signIn();
+    } catch (error: any) {
+      setAuthError(error);
+    }
+  };
+
   if (!isAuthReady) {
     return (
       <div className="min-h-screen bg-[#0f172a] flex items-center justify-center">
@@ -408,12 +419,28 @@ export default function App() {
           <h1 className="text-3xl font-black uppercase italic tracking-tighter mb-2">Heroes and Habits</h1>
           <p className="text-slate-400 mb-8 font-medium">Begin your epic journey of self-improvement. Log in to start your quest!</p>
           <button 
-            onClick={() => signIn()}
+            onClick={handleSignIn}
             className="w-full py-4 bg-indigo-600 hover:bg-indigo-500 text-white rounded-2xl font-black uppercase tracking-widest flex items-center justify-center gap-3 transition-all shadow-lg shadow-indigo-500/20 active:scale-95"
           >
             <LogIn size={20} />
             Enter the Realm
           </button>
+
+          {authError && (
+            <div className="mt-6 p-4 bg-red-500/20 border border-red-500/50 rounded-xl text-red-200 text-sm text-left animate-in fade-in slide-in-from-top-4">
+              <p className="font-bold mb-1">Login Failed</p>
+              <p className="opacity-90 mb-2">{authError.message}</p>
+              <div className="text-[10px] opacity-60 font-mono bg-black/30 p-2 rounded">
+                Error Code: {authError.code}<br/>
+                Current Domain: {authError.domain}
+              </div>
+              {authError.code === 'auth/unauthorized-domain' && (
+                <p className="mt-2 text-xs font-semibold text-red-300">
+                  💡 Tip: Add "{authError.domain}" to your Firebase Authorized Domains.
+                </p>
+              )}
+            </div>
+          )}
         </motion.div>
       </div>
     );

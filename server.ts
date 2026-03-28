@@ -7,7 +7,7 @@ const __dirname = path.dirname(__filename);
 
 const app = express();
 // Cloud Run provides the port via the PORT environment variable
-const PORT = process.env.PORT || 8080;
+const PORT = Number(process.env.PORT) || 8080;
 
 // Serve static files from the 'dist' directory (created by npm run build)
 app.use(express.static(path.join(__dirname, 'dist')));
