@@ -1,0 +1,68 @@
+{
+  "entities": {
+    "Reward": {
+      "title": "Reward",
+      "description": "A reward item in the shop",
+      "type": "object",
+      "properties": {
+        "title": { "type": "string" },
+        "description": { "type": "string" },
+        "pointCost": { "type": "integer" },
+        "imageUrl": { "type": "string" },
+        "imageHint": { "type": "string" },
+        "stockQuantity": { "type": "integer" },
+        "parentId": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["title", "pointCost", "parentId", "createdAt"]
+    },
+    "UserStats": {
+      "title": "User Stats",
+      "description": "RPG stats for a user (parent or child)",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string" },
+        "userType": { "type": "string", "enum": ["parent", "child"] },
+        "parentId": { "type": "string" },
+        "totalPointsBalance": { "type": "integer" },
+        "lifetimePoints": { "type": "integer" },
+        "lifetimeTasksCompleted": { "type": "integer" },
+        "xp": { "type": "integer" },
+        "level": { "type": "integer" }
+      },
+      "required": ["name", "userType", "totalPointsBalance", "lifetimePoints", "lifetimeTasksCompleted"]
+    },
+    "Habit": {
+      "title": "Habit",
+      "description": "A quest or daily habit",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string" },
+        "description": { "type": "string" },
+        "points": { "type": "integer" },
+        "xp": { "type": "integer" },
+        "icon": { "type": "string" },
+        "streak": { "type": "integer" },
+        "lastCompleted": { "type": "string", "format": "date" },
+        "category": { "type": "string", "enum": ["Quest", "Daily", "Skill"] },
+        "parentId": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["name", "points", "xp", "parentId", "createdAt"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": "UserStats",
+      "description": "User RPG progress"
+    },
+    "/users/{userId}/habits/{habitId}": {
+      "schema": "Habit",
+      "description": "User specific habits"
+    },
+    "/rewards/{rewardId}": {
+      "schema": "Reward",
+      "description": "Global rewards available for redemption"
+    }
+  }
+}

@@ -1,0 +1,102 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    
+    // ===============================================================
+    // Assumed Data Model
+    // ===============================================================
+    //
+    // Collection: users
+    // Document ID: {userId}
+    // Fields:
+    //   - name: string (required)
+    //   - userType: string ('parent' or 'child') (required)
+    //   - parentId: string (optional, for children)
+    //   - totalPointsBalance: number (required)
+    //   - lifetimePoints: number (required)
+    //   - lifetimeTasksCompleted: number (required)
+    //   - xp: number (required)
+    //   - level: number (required)
+    //
+    // Collection: users/{userId}/habits
+    // Document ID: {habitId}
+    // Fields:
+    //   - name: string (required)
+    //   - description: string
+    //   - points: number (required)
+    //   - xp: number (required)
+    //   - icon: string
+    //   - streak: number
+    //   - lastCompleted: string (ISO date)
+    //   - category: string (Quest, Daily, Skill)
+    //
+    // ===============================================================
+
+    // Helper Functions
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+
+    function isParentOf(userId) {
+      return isAuthenticated() && 
+             (get(/databases/$(database)/documents/users/$(userId)).data.parentId == request.auth.uid ||
+              resource.data.parentId == request.auth.uid);
+    }
+
+    function isValidUserStats(data) {
+      return data.keys().hasAll(['name', 'userType', 'totalPointsBalance', 'lifetimePoints', 'lifetimeTasksCompleted', 'xp', 'level']) &&
+             data.name is string &&
+             data.userType in ['parent', 'child'] &&
+             data.totalPointsBalance is number &&
+             data.lifetimePoints is number &&
+             data.lifetimeTasksCompleted is number &&
+             data.xp is number &&
+             data.level is number;
+    }
+
+    function isValidHabit(data) {
+      return data.keys().hasAll(['name', 'points', 'xp', 'parentId', 'createdAt']) &&
+             data.name is string && data.name.size() > 0 && data.name.size() < 100 &&
+             data.points is number && data.points >= 0 &&
+             data.xp is number && data.xp >= 0 &&
+             data.parentId is string &&
+             (!('category' in data) || data.category in ['Quest', 'Daily', 'Skill']);
+    }
+
+    function isValidReward(data) {
+      return data.keys().hasAll(['title', 'pointCost', 'parentId', 'createdAt']) &&
+             data.title is string && data.title.size() > 0 && data.title.size() < 100 &&
+             data.pointCost is number && data.pointCost >= 0 &&
+             data.parentId is string;
+    }
+
+    // Rules
+    match /users/{userId} {
+      allow read: if isOwner(userId) || (isAuthenticated() && resource.data.parentId == request.auth.uid);
+      allow create: if isAuthenticated() && (isOwner(userId) || request.resource.data.parentId == request.auth.uid) && isValidUserStats(request.resource.data);
+      allow update: if (isOwner(userId) || (isAuthenticated() && resource.data.parentId == request.auth.uid)) && isValidUserStats(request.resource.data);
+
+      match /habits/{habitId} {
+        allow read: if isOwner(userId) || (isAuthenticated() && (resource.data.parentId == request.auth.uid || get(/databases/$(database)/documents/users/$(userId)).data.parentId == request.auth.uid));
+        allow create: if (isOwner(userId) || (isAuthenticated() && get(/databases/$(database)/documents/users/$(userId)).data.parentId == request.auth.uid)) && isValidHabit(request.resource.data);
+        allow update, delete: if isOwner(userId) || (isAuthenticated() && (resource.data.parentId == request.auth.uid || get(/databases/$(database)/documents/users/$(userId)).data.parentId == request.auth.uid));
+      }
+    }
+
+    match /rewards/{rewardId} {
+      allow read: if isAuthenticated();
+      allow create: if isAuthenticated() && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.userType == 'parent' && isValidReward(request.resource.data);
+      allow update: if isAuthenticated() && (resource.data.parentId == request.auth.uid || get(/databases/$(database)/documents/users/$(request.auth.uid)).data.userType == 'parent') && isValidReward(request.resource.data);
+      allow delete: if isAuthenticated() && (resource.data.parentId == request.auth.uid || get(/databases/$(database)/documents/users/$(request.auth.uid)).data.userType == 'parent');
+    }
+
+    // Connection test path
+    match /test/connection {
+      allow read: if true;
+    }
+  }
+}
