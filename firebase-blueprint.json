@@ -28,7 +28,8 @@
         "lifetimePoints": { "type": "integer" },
         "lifetimeTasksCompleted": { "type": "integer" },
         "xp": { "type": "integer" },
-        "level": { "type": "integer" }
+        "level": { "type": "integer" },
+        "parentPin": { "type": "string", "description": "4-digit PIN for Parent Zone access" }
       },
       "required": ["name", "userType", "totalPointsBalance", "lifetimePoints", "lifetimeTasksCompleted"]
     },
@@ -45,6 +46,7 @@
         "streak": { "type": "integer" },
         "lastCompleted": { "type": "string", "format": "date" },
         "category": { "type": "string", "enum": ["Quest", "Daily", "Skill"] },
+        "requiresApproval": { "type": "boolean" },
         "parentId": { "type": "string" },
         "createdAt": { "type": "string", "format": "date-time" }
       },
@@ -60,9 +62,13 @@
         "date": { "type": "string", "format": "date" },
         "timestamp": { "type": "string", "format": "date-time" },
         "pointsEarned": { "type": "integer" },
-        "xpEarned": { "type": "integer" }
+        "xpEarned": { "type": "integer" },
+        "status": { "type": "string", "enum": ["pending", "approved"] },
+        "childId": { "type": "string" },
+        "childName": { "type": "string" },
+        "parentId": { "type": "string" }
       },
-      "required": ["habitId", "date", "timestamp", "pointsEarned", "xpEarned"]
+      "required": ["habitId", "date", "timestamp", "pointsEarned", "xpEarned", "status", "childId", "childName", "parentId"]
     }
   },
   "firestore": {

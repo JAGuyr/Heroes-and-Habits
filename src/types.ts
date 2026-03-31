@@ -35,6 +35,7 @@ export interface UserStats {
   lifetimeTasksCompleted: number;
   level: number; // We'll keep level as a calculated or stored field for the RPG feel
   xp: number;
+  parentPin?: string; // 4-digit PIN for Parent Zone access
 }
 
 export interface CompletionLog {

@@ -33,7 +33,8 @@ import {
   ShieldCheck,
   XCircle,
   Clock,
-  UserPlus
+  UserPlus,
+  Lock
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { Habit, Reward, UserStats, CompletionLog } from './types';
@@ -131,7 +132,7 @@ const StatsView = ({ completions, habits }: { completions: CompletionLog[], habi
         const d = new Date();
         d.setDate(now.getDate() - i);
         const dateStr = d.toISOString().split('T')[0];
-        const dayCompletions = completions.filter(c => c.date === dateStr);
+        const dayCompletions = completions.filter(c => c.date === dateStr && c.status === 'approved');
         const uniqueHabits = new Set(dayCompletions.map(c => c.habitId)).size;
         const totalActiveHabits = habits.length || 1;
         const rate = Math.round((uniqueHabits / totalActiveHabits) * 100);
@@ -152,7 +153,7 @@ const StatsView = ({ completions, habits }: { completions: CompletionLog[], habi
         
         const weekCompletions = completions.filter(c => {
           const cDate = new Date(c.date);
-          return cDate >= start && cDate <= end;
+          return cDate >= start && cDate <= end && c.status === 'approved';
         });
         
         const avgDailyCount = weekCompletions.length / 7;
@@ -175,7 +176,7 @@ const StatsView = ({ completions, habits }: { completions: CompletionLog[], habi
         
         const monthCompletions = completions.filter(c => {
           const cDate = new Date(c.date);
-          return cDate.getMonth() === month && cDate.getFullYear() === year;
+          return cDate.getMonth() === month && cDate.getFullYear() === year && c.status === 'approved';
         });
         
         const daysInMonth = new Date(year, month + 1, 0).getDate();
@@ -195,7 +196,7 @@ const StatsView = ({ completions, habits }: { completions: CompletionLog[], habi
 
   const categoryData = useMemo(() => {
     const counts: Record<string, number> = {};
-    completions.forEach(c => {
+    completions.filter(c => c.status === 'approved').forEach(c => {
       counts[c.category] = (counts[c.category] || 0) + 1;
     });
     return Object.entries(counts).map(([name, value]) => ({ name, value }));
@@ -305,6 +306,8 @@ export default function App() {
   const [children, setChildren] = useState<UserStats[]>([]);
   
   const [isAddingChild, setIsAddingChild] = useState(false);
+  const [isAssigningQuest, setIsAssigningQuest] = useState(false);
+  const [selectedChildrenForQuest, setSelectedChildrenForQuest] = useState<string[]>([]);
   const [newChildName, setNewChildName] = useState('');
   const [isAddingHabit, setIsAddingHabit] = useState(false);
   const [newHabit, setNewHabit] = useState<Partial<Habit>>({
@@ -332,8 +335,20 @@ export default function App() {
   const [habitFilter, setHabitFilter] = useState<'All' | 'Daily' | 'Quest' | 'Skill'>('All');
   const [showLevelUp, setShowLevelUp] = useState(false);
   const [pendingCompletions, setPendingCompletions] = useState<CompletionLog[]>([]);
+  const [isPinVerified, setIsPinVerified] = useState(false);
+  const [pinInput, setPinInput] = useState('');
+  const [pinError, setPinError] = useState('');
 
   const activeHero = selectedChild || currentUserProfile;
+
+  // Reset PIN verification when switching tabs
+  useEffect(() => {
+    if (activeTab !== 'parent') {
+      setIsPinVerified(false);
+      setPinInput('');
+      setPinError('');
+    }
+  }, [activeTab]);
 
   // Connection test
   useEffect(() => {
@@ -490,6 +505,31 @@ export default function App() {
     }
   };
 
+  const handleSetPin = async (pin: string) => {
+    if (!user || !currentUserProfile) return;
+    if (pin.length !== 4 || !/^\d+$/.test(pin)) {
+      setPinError('PIN must be 4 digits');
+      return;
+    }
+    try {
+      await updateDoc(doc(db, 'users', user.uid), { parentPin: pin });
+      setIsPinVerified(true);
+      setPinError('');
+    } catch (e) {
+      console.error('Error setting PIN:', e);
+      setPinError('Failed to set PIN');
+    }
+  };
+
+  const handleVerifyPin = (pin: string) => {
+    if (currentUserProfile?.parentPin === pin) {
+      setIsPinVerified(true);
+      setPinError('');
+    } else {
+      setPinError('Incorrect PIN');
+    }
+  };
+
   const addHabit = async () => {
     if (!activeHero || !currentUserProfile || !newHabit.name?.trim()) return;
     const habitId = `habit_${Date.now()}`;
@@ -540,6 +580,42 @@ export default function App() {
       });
     } catch (e) {
       handleFirestoreError(e, OperationType.WRITE, `rewards/${rewardId}`);
+    }
+  };
+
+  const assignQuestToChildren = async () => {
+    if (!user || !currentUserProfile || !newHabit.name?.trim() || selectedChildrenForQuest.length === 0) return;
+    
+    const timestamp = new Date().toISOString();
+    
+    try {
+      const promises = selectedChildrenForQuest.map(childId => {
+        const habitId = `habit_${Date.now()}_${childId}`;
+        const habitData: Habit = {
+          ...newHabit,
+          id: habitId,
+          streak: 0,
+          lastCompleted: null,
+          parentId: user.uid,
+          createdAt: timestamp
+        } as Habit;
+        return setDoc(doc(db, 'users', childId, 'habits', habitId), habitData);
+      });
+      
+      await Promise.all(promises);
+      setIsAssigningQuest(false);
+      setSelectedChildrenForQuest([]);
+      setNewHabit({
+        name: '',
+        description: '',
+        points: 10,
+        xp: 20,
+        category: 'Quest',
+        icon: 'Sword',
+        requiresApproval: false
+      });
+    } catch (e) {
+      handleFirestoreError(e, OperationType.WRITE, `multiple_habits`);
     }
   };
 
@@ -965,7 +1041,7 @@ export default function App() {
                 : 'bg-slate-800 text-slate-400 hover:bg-slate-700'
               }`}
             >
-              <ShieldCheck size={16} />
+              {isPinVerified ? <ShieldCheck size={16} /> : <Lock size={16} />}
               Parent
             </button>
           )}
@@ -1316,17 +1392,272 @@ export default function App() {
             </div>
           </div>
         ) : activeTab === 'parent' ? (
-          <div className="space-y-6">
+          !isPinVerified ? (
+            <motion.div 
+              initial={{ opacity: 0, y: 20 }}
+              animate={{ opacity: 1, y: 0 }}
+              className="max-w-md mx-auto space-y-8 py-12"
+            >
+              <div className="text-center space-y-4">
+                <div className="w-20 h-20 bg-indigo-500/20 text-indigo-400 rounded-3xl flex items-center justify-center mx-auto shadow-xl shadow-indigo-500/10">
+                  <Lock size={40} />
+                </div>
+                <h2 className="text-2xl font-black text-white uppercase tracking-tighter">
+                  {currentUserProfile?.parentPin ? 'Enter Parent PIN' : 'Set Parent PIN'}
+                </h2>
+                <p className="text-slate-400 text-sm font-medium">
+                  {currentUserProfile?.parentPin 
+                    ? 'Please enter your 4-digit secret code to access the Command Center.' 
+                    : 'Create a 4-digit PIN to secure the Parent Zone from curious heroes.'}
+                </p>
+              </div>
+
+              <div className="space-y-6">
+                <div className="flex justify-center gap-4">
+                  {[0, 1, 2, 3].map((i) => (
+                    <div 
+                      key={i}
+                      className={`w-12 h-16 rounded-2xl border-2 flex items-center justify-center text-2xl font-black transition-all ${
+                        pinInput.length > i 
+                        ? 'border-indigo-500 bg-indigo-500/10 text-white shadow-lg shadow-indigo-500/20' 
+                        : 'border-slate-700 bg-slate-800 text-slate-600'
+                      }`}
+                    >
+                      {pinInput.length > i ? '•' : ''}
+                    </div>
+                  ))}
+                </div>
+
+                {pinError && (
+                  <p className="text-red-400 text-center text-xs font-bold uppercase tracking-widest animate-pulse">
+                    {pinError}
+                  </p>
+                )}
+
+                <div className="grid grid-cols-3 gap-4">
+                  {[1, 2, 3, 4, 5, 6, 7, 8, 9].map((num) => (
+                    <button
+                      key={num}
+                      onClick={() => pinInput.length < 4 && setPinInput(prev => prev + num)}
+                      className="h-16 bg-slate-800 hover:bg-slate-700 border-2 border-slate-700 rounded-2xl text-xl font-black text-white transition-all active:scale-95"
+                    >
+                      {num}
+                    </button>
+                  ))}
+                  <button
+                    onClick={() => setPinInput('')}
+                    className="h-16 bg-slate-800 hover:bg-red-500/20 border-2 border-slate-700 rounded-2xl text-xs font-black text-red-400 uppercase tracking-widest transition-all active:scale-95"
+                  >
+                    Clear
+                  </button>
+                  <button
+                    onClick={() => pinInput.length < 4 && setPinInput(prev => prev + '0')}
+                    className="h-16 bg-slate-800 hover:bg-slate-700 border-2 border-slate-700 rounded-2xl text-xl font-black text-white transition-all active:scale-95"
+                  >
+                    0
+                  </button>
+                  <button
+                    onClick={() => {
+                      if (pinInput.length === 4) {
+                        if (currentUserProfile?.parentPin) {
+                          handleVerifyPin(pinInput);
+                        } else {
+                          handleSetPin(pinInput);
+                        }
+                        setPinInput('');
+                      }
+                    }}
+                    className="h-16 bg-indigo-600 hover:bg-indigo-500 rounded-2xl flex items-center justify-center text-white transition-all active:scale-95 shadow-lg shadow-indigo-600/20"
+                  >
+                    <ChevronRight size={24} />
+                  </button>
+                </div>
+              </div>
+            </motion.div>
+          ) : (
+            <div className="space-y-6">
             <div className="flex items-center justify-between">
               <h2 className="text-sm font-black uppercase tracking-widest text-slate-500">Parent Command Center</h2>
-              <button 
-                onClick={() => setIsAddingChild(true)}
-                className="flex items-center gap-2 px-3 py-1.5 bg-indigo-600/20 text-indigo-400 rounded-lg text-[10px] font-black uppercase tracking-widest hover:bg-indigo-600/30 transition-colors"
-              >
-                <UserPlus size={14} />
-                Add Hero
-              </button>
+              <div className="flex gap-2">
+                <button 
+                  onClick={() => setIsAssigningQuest(true)}
+                  className="flex items-center gap-2 px-3 py-1.5 bg-indigo-600/20 text-indigo-400 rounded-lg text-[10px] font-black uppercase tracking-widest hover:bg-indigo-600/30 transition-colors"
+                >
+                  <Plus size={14} />
+                  Assign Quest
+                </button>
+                <button 
+                  onClick={() => setIsAddingChild(true)}
+                  className="flex items-center gap-2 px-3 py-1.5 bg-emerald-600/20 text-emerald-400 rounded-lg text-[10px] font-black uppercase tracking-widest hover:bg-emerald-600/30 transition-colors"
+                >
+                  <UserPlus size={14} />
+                  Add Hero
+                </button>
+              </div>
             </div>
+
+            {isAssigningQuest && (
+              <motion.div 
+                initial={{ height: 0, opacity: 0 }}
+                animate={{ height: 'auto', opacity: 1 }}
+                className="bg-slate-800 border-2 border-indigo-500 rounded-2xl p-6 mb-6 overflow-hidden"
+              >
+                <h3 className="text-sm font-black uppercase tracking-widest text-indigo-400 mb-4">Assign Quest to Heroes</h3>
+                <div className="space-y-4">
+                  <input 
+                    type="text"
+                    placeholder="Quest Name..."
+                    value={newHabit.name}
+                    onChange={e => setNewHabit({...newHabit, name: e.target.value})}
+                    className="w-full bg-slate-900 border-2 border-slate-700 rounded-xl p-3 outline-none focus:border-indigo-500 transition-colors"
+                  />
+                  <textarea 
+                    placeholder="Description..."
+                    value={newHabit.description}
+                    onChange={e => setNewHabit({...newHabit, description: e.target.value})}
+                    className="w-full bg-slate-900 border-2 border-slate-700 rounded-xl p-3 outline-none focus:border-indigo-500 transition-colors h-20"
+                  />
+                  
+                  <div className="grid grid-cols-2 gap-4">
+                    <div>
+                      <label className="text-[10px] font-black uppercase tracking-widest text-slate-500 ml-1">Category</label>
+                      <select 
+                        value={newHabit.category}
+                        onChange={e => setNewHabit({...newHabit, category: e.target.value as any})}
+                        className="w-full bg-slate-900 border-2 border-slate-700 rounded-xl p-3 outline-none focus:border-indigo-500 transition-colors text-slate-200"
+                      >
+                        <option value="Daily">Daily</option>
+                        <option value="Quest">Quest</option>
+                        <option value="Skill">Skill</option>
+                      </select>
+                    </div>
+                    <div>
+                      <label className="text-[10px] font-black uppercase tracking-widest text-slate-500 ml-1">Icon</label>
+                      <select 
+                        value={newHabit.icon}
+                        onChange={e => setNewHabit({...newHabit, icon: e.target.value})}
+                        className="w-full bg-slate-900 border-2 border-slate-700 rounded-xl p-3 outline-none focus:border-indigo-500 transition-colors text-slate-200"
+                      >
+                        {Object.keys(ICON_MAP).map(icon => (
+                          <option key={icon} value={icon}>{icon}</option>
+                        ))}
+                      </select>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-4">
+                    <div>
+                      <label className="text-[10px] font-black uppercase tracking-widest text-slate-500 ml-1">Gold Reward</label>
+                      <input 
+                        type="number"
+                        value={newHabit.points}
+                        onChange={e => setNewHabit({...newHabit, points: parseInt(e.target.value) || 0})}
+                        className="w-full bg-slate-900 border-2 border-slate-700 rounded-xl p-3 outline-none focus:border-indigo-500 transition-colors"
+                      />
+                    </div>
+                    <div>
+                      <label className="text-[10px] font-black uppercase tracking-widest text-slate-500 ml-1">XP Reward</label>
+                      <input 
+                        type="number"
+                        value={newHabit.xp}
+                        onChange={e => setNewHabit({...newHabit, xp: parseInt(e.target.value) || 0})}
+                        className="w-full bg-slate-900 border-2 border-slate-700 rounded-xl p-3 outline-none focus:border-indigo-500 transition-colors"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="flex items-center gap-3 p-3 bg-slate-900 border-2 border-slate-700 rounded-xl">
+                    <input 
+                      type="checkbox"
+                      id="requiresApprovalParent"
+                      checked={newHabit.requiresApproval}
+                      onChange={e => setNewHabit({...newHabit, requiresApproval: e.target.checked})}
+                      className="w-5 h-5 rounded border-slate-700 text-indigo-600 focus:ring-indigo-500 bg-slate-800"
+                    />
+                    <label htmlFor="requiresApprovalParent" className="text-xs font-black uppercase tracking-widest text-slate-400 cursor-pointer">
+                      Requires Parent Approval
+                    </label>
+                  </div>
+
+                  <div className="space-y-2">
+                    <label className="text-[10px] font-black uppercase tracking-widest text-slate-500 ml-1">Assign to Heroes</label>
+                    <div className="flex flex-wrap gap-2">
+                      {children.map(child => (
+                        <button
+                          key={child.uid}
+                          onClick={() => {
+                            setSelectedChildrenForQuest(prev => 
+                              prev.includes(child.uid) 
+                              ? prev.filter(id => id !== child.uid)
+                              : [...prev, child.uid]
+                            );
+                          }}
+                          className={`px-3 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all ${
+                            selectedChildrenForQuest.includes(child.uid)
+                            ? 'bg-indigo-600 text-white'
+                            : 'bg-slate-900 text-slate-500 border-2 border-slate-700'
+                          }`}
+                        >
+                          {child.name}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  <div className="flex gap-3">
+                    <button 
+                      onClick={assignQuestToChildren}
+                      disabled={selectedChildrenForQuest.length === 0}
+                      className="flex-1 py-3 bg-indigo-600 hover:bg-indigo-500 disabled:bg-slate-700 disabled:text-slate-500 text-white rounded-xl font-black uppercase tracking-widest text-xs transition-all"
+                    >
+                      Assign Quest
+                    </button>
+                    <button 
+                      onClick={() => {
+                        setIsAssigningQuest(false);
+                        setSelectedChildrenForQuest([]);
+                      }}
+                      className="flex-1 py-3 bg-slate-700 hover:bg-slate-600 text-slate-300 rounded-xl font-black uppercase tracking-widest text-xs transition-all"
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                </div>
+              </motion.div>
+            )}
+
+            {isAddingChild && (
+              <motion.div 
+                initial={{ height: 0, opacity: 0 }}
+                animate={{ height: 'auto', opacity: 1 }}
+                className="bg-slate-800 border-2 border-emerald-500 rounded-2xl p-6 mb-6 overflow-hidden"
+              >
+                <h3 className="text-sm font-black uppercase tracking-widest text-emerald-400 mb-4">Summon New Hero</h3>
+                <div className="space-y-4">
+                  <input 
+                    type="text"
+                    placeholder="Hero Name..."
+                    value={newChildName}
+                    onChange={e => setNewChildName(e.target.value)}
+                    className="w-full bg-slate-900 border-2 border-slate-700 rounded-xl p-3 outline-none focus:border-emerald-500 transition-colors"
+                  />
+                  <div className="flex gap-3">
+                    <button 
+                      onClick={addChild}
+                      className="flex-1 py-3 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl font-black uppercase tracking-widest text-xs transition-all"
+                    >
+                      Add Hero
+                    </button>
+                    <button 
+                      onClick={() => setIsAddingChild(false)}
+                      className="flex-1 py-3 bg-slate-700 hover:bg-slate-600 text-slate-300 rounded-xl font-black uppercase tracking-widest text-xs transition-all"
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                </div>
+              </motion.div>
+            )}
 
             {/* Pending Approvals */}
             <div className="space-y-4">
@@ -1432,25 +1763,44 @@ export default function App() {
               </div>
             </div>
           </div>
-        ) : (
+        )
+      ) : (
           <StatsView completions={completions} habits={habits} />
         )}
       </main>
 
       {/* Bottom Nav */}
       <nav className="fixed bottom-0 inset-x-0 bg-[#1e293b] border-t border-slate-700 p-4 flex justify-around items-center md:hidden">
-        <button className="text-indigo-500 flex flex-col items-center gap-1">
+        <button 
+          onClick={() => setActiveTab('quests')}
+          className={`flex flex-col items-center gap-1 transition-all ${activeTab === 'quests' ? 'text-indigo-500' : 'text-slate-500'}`}
+        >
           <LayoutDashboard size={24} />
           <span className="text-[10px] font-bold uppercase tracking-widest">Quests</span>
         </button>
-        <button className="text-slate-500 flex flex-col items-center gap-1">
+        <button 
+          onClick={() => setActiveTab('shop')}
+          className={`flex flex-col items-center gap-1 transition-all ${activeTab === 'shop' ? 'text-indigo-500' : 'text-slate-500'}`}
+        >
           <ShoppingBag size={24} />
           <span className="text-[10px] font-bold uppercase tracking-widest">Shop</span>
         </button>
-        <button className="text-slate-500 flex flex-col items-center gap-1">
-          <Trophy size={24} />
-          <span className="text-[10px] font-bold uppercase tracking-widest">Feats</span>
+        <button 
+          onClick={() => setActiveTab('stats')}
+          className={`flex flex-col items-center gap-1 transition-all ${activeTab === 'stats' ? 'text-indigo-500' : 'text-slate-500'}`}
+        >
+          <BarChart3 size={24} />
+          <span className="text-[10px] font-bold uppercase tracking-widest">Stats</span>
         </button>
+        {currentUserProfile?.userType === 'parent' && (
+          <button 
+            onClick={() => setActiveTab('parent')}
+            className={`flex flex-col items-center gap-1 transition-all ${activeTab === 'parent' ? 'text-indigo-500' : 'text-slate-500'}`}
+          >
+            {isPinVerified ? <ShieldCheck size={24} /> : <Lock size={24} />}
+            <span className="text-[10px] font-bold uppercase tracking-widest">Parent</span>
+          </button>
+        )}
       </nav>
     </div>
   );

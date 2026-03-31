@@ -17,6 +17,7 @@ service cloud.firestore {
     //   - lifetimeTasksCompleted: number (required)
     //   - xp: number (required)
     //   - level: number (required)
+    //   - parentPin: string (optional, 4-digit)
     //
     // Collection: users/{userId}/habits
     // Document ID: {habitId}
@@ -29,6 +30,22 @@ service cloud.firestore {
     //   - streak: number
     //   - lastCompleted: string (ISO date)
     //   - category: string (Quest, Daily, Skill)
+    //   - requiresApproval: boolean
+    //   - parentId: string
+    //
+    // Collection: users/{userId}/completions
+    // Document ID: {completionId}
+    // Fields:
+    //   - habitId: string (required)
+    //   - habitName: string
+    //   - date: string (ISO date) (required)
+    //   - timestamp: string (ISO date-time) (required)
+    //   - pointsEarned: number (required)
+    //   - xpEarned: number (required)
+    //   - status: string ('pending', 'approved') (required)
+    //   - childId: string (required)
+    //   - childName: string (required)
+    //   - parentId: string (required)
     //
     // ===============================================================
 
@@ -55,7 +72,8 @@ service cloud.firestore {
              data.lifetimePoints is number &&
              data.lifetimeTasksCompleted is number &&
              data.xp is number &&
-             data.level is number;
+             data.level is number &&
+             (!('parentPin' in data) || (data.parentPin is string && data.parentPin.matches('^[0-9]{4}$')));
     }
 
     function isValidHabit(data) {
@@ -69,16 +87,16 @@ service cloud.firestore {
     }
 
     function isValidCompletionLog(data) {
-      return data.keys().hasAll(['habitId', 'date', 'timestamp', 'pointsEarned', 'xpEarned']) &&
+      return data.keys().hasAll(['habitId', 'date', 'timestamp', 'pointsEarned', 'xpEarned', 'status', 'childId', 'childName', 'parentId']) &&
              data.habitId is string &&
              data.date is string &&
              data.timestamp is string &&
              data.pointsEarned is number &&
              data.xpEarned is number &&
-             (!('status' in data) || data.status in ['pending', 'approved']) &&
-             (!('childId' in data) || data.childId is string) &&
-             (!('childName' in data) || data.childName is string) &&
-             (!('parentId' in data) || data.parentId is string);
+             data.status in ['pending', 'approved'] &&
+             data.childId is string &&
+             data.childName is string &&
+             data.parentId is string;
     }
 
     function isValidReward(data) {
