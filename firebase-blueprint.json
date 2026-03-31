@@ -49,6 +49,20 @@
         "createdAt": { "type": "string", "format": "date-time" }
       },
       "required": ["name", "points", "xp", "parentId", "createdAt"]
+    },
+    "CompletionLog": {
+      "title": "Completion Log",
+      "description": "A record of a habit completion",
+      "type": "object",
+      "properties": {
+        "habitId": { "type": "string" },
+        "habitName": { "type": "string" },
+        "date": { "type": "string", "format": "date" },
+        "timestamp": { "type": "string", "format": "date-time" },
+        "pointsEarned": { "type": "integer" },
+        "xpEarned": { "type": "integer" }
+      },
+      "required": ["habitId", "date", "timestamp", "pointsEarned", "xpEarned"]
     }
   },
   "firestore": {
@@ -59,6 +73,10 @@
     "/users/{userId}/habits/{habitId}": {
       "schema": "Habit",
       "description": "User specific habits"
+    },
+    "/users/{userId}/completions/{completionId}": {
+      "schema": "CompletionLog",
+      "description": "A log of all habit completions for a user"
     },
     "/rewards/{rewardId}": {
       "schema": "Reward",

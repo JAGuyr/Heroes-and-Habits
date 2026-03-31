@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { 
   Sword, 
   Shield, 
@@ -26,10 +26,17 @@ import {
   Zap,
   LogOut,
   LogIn,
-  Trash2
+  Trash2,
+  BarChart3,
+  TrendingUp,
+  Calendar as CalendarIcon,
+  ShieldCheck,
+  XCircle,
+  Clock,
+  UserPlus
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
-import { Habit, Reward, UserStats } from './types';
+import { Habit, Reward, UserStats, CompletionLog } from './types';
 import { INITIAL_HABITS, INITIAL_REWARDS, XP_PER_LEVEL } from './constants';
 import { auth, db, signIn, logOut } from './firebase';
 import { 
@@ -42,9 +49,27 @@ import {
   query, 
   where,
   getDocFromServer,
-  deleteDoc
+  deleteDoc,
+  addDoc,
+  orderBy,
+  limit,
+  collectionGroup
 } from 'firebase/firestore';
 import { onAuthStateChanged, User } from 'firebase/auth';
+import { 
+  BarChart, 
+  Bar, 
+  XAxis, 
+  YAxis, 
+  CartesianGrid, 
+  Tooltip, 
+  ResponsiveContainer,
+  LineChart,
+  Line,
+  Cell,
+  PieChart,
+  Pie
+} from 'recharts';
 
 const ICON_MAP: Record<string, any> = {
   Droplets,
@@ -91,6 +116,187 @@ function handleFirestoreError(error: unknown, operationType: OperationType, path
   throw new Error(JSON.stringify(errInfo));
 }
 
+// --- Components ---
+
+const StatsView = ({ completions, habits }: { completions: CompletionLog[], habits: Habit[] }) => {
+  const [timeframe, setTimeframe] = useState<'daily' | 'weekly' | 'monthly'>('daily');
+
+  const stats = useMemo(() => {
+    const now = new Date();
+    const data: any[] = [];
+    
+    if (timeframe === 'daily') {
+      // Last 7 days
+      for (let i = 6; i >= 0; i--) {
+        const d = new Date();
+        d.setDate(now.getDate() - i);
+        const dateStr = d.toISOString().split('T')[0];
+        const dayCompletions = completions.filter(c => c.date === dateStr);
+        const uniqueHabits = new Set(dayCompletions.map(c => c.habitId)).size;
+        const totalActiveHabits = habits.length || 1;
+        const rate = Math.round((uniqueHabits / totalActiveHabits) * 100);
+        
+        data.push({
+          name: d.toLocaleDateString('en-US', { weekday: 'short' }),
+          rate,
+          count: uniqueHabits
+        });
+      }
+    } else if (timeframe === 'weekly') {
+      // Last 4 weeks
+      for (let i = 3; i >= 0; i--) {
+        const start = new Date();
+        start.setDate(now.getDate() - (i * 7 + now.getDay()));
+        const end = new Date(start);
+        end.setDate(start.getDate() + 6);
+        
+        const weekCompletions = completions.filter(c => {
+          const cDate = new Date(c.date);
+          return cDate >= start && cDate <= end;
+        });
+        
+        const avgDailyCount = weekCompletions.length / 7;
+        const totalActiveHabits = habits.length || 1;
+        const rate = Math.round((avgDailyCount / totalActiveHabits) * 100);
+
+        data.push({
+          name: `Week ${4-i}`,
+          rate,
+          count: weekCompletions.length
+        });
+      }
+    } else {
+      // Last 6 months
+      for (let i = 5; i >= 0; i--) {
+        const d = new Date();
+        d.setMonth(now.getMonth() - i);
+        const month = d.getMonth();
+        const year = d.getFullYear();
+        
+        const monthCompletions = completions.filter(c => {
+          const cDate = new Date(c.date);
+          return cDate.getMonth() === month && cDate.getFullYear() === year;
+        });
+        
+        const daysInMonth = new Date(year, month + 1, 0).getDate();
+        const avgDailyCount = monthCompletions.length / daysInMonth;
+        const totalActiveHabits = habits.length || 1;
+        const rate = Math.round((avgDailyCount / totalActiveHabits) * 100);
+
+        data.push({
+          name: d.toLocaleDateString('en-US', { month: 'short' }),
+          rate,
+          count: monthCompletions.length
+        });
+      }
+    }
+    return data;
+  }, [completions, habits, timeframe]);
+
+  const categoryData = useMemo(() => {
+    const counts: Record<string, number> = {};
+    completions.forEach(c => {
+      counts[c.category] = (counts[c.category] || 0) + 1;
+    });
+    return Object.entries(counts).map(([name, value]) => ({ name, value }));
+  }, [completions]);
+
+  const COLORS = ['#6366f1', '#ec4899', '#f59e0b', '#10b981', '#8b5cf6'];
+
+  return (
+    <div className="space-y-6 pb-20">
+      <div className="flex items-center justify-between">
+        <h2 className="text-sm font-black uppercase tracking-widest text-slate-500">Battle Statistics</h2>
+        <div className="flex bg-slate-800 rounded-lg p-1">
+          {(['daily', 'weekly', 'monthly'] as const).map((t) => (
+            <button
+              key={t}
+              onClick={() => setTimeframe(t)}
+              className={`px-3 py-1 text-[10px] font-black uppercase tracking-widest rounded-md transition-all ${
+                timeframe === t ? 'bg-indigo-600 text-white' : 'text-slate-400 hover:text-slate-200'
+              }`}
+            >
+              {t}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <div className="bg-slate-800 border-2 border-slate-700 rounded-3xl p-6">
+        <div className="flex items-center gap-3 mb-6">
+          <div className="w-10 h-10 bg-indigo-500/20 text-indigo-400 rounded-xl flex items-center justify-center">
+            <Zap size={20} />
+          </div>
+          <div>
+            <h3 className="font-bold text-slate-100">Completion Rate</h3>
+            <p className="text-xs text-slate-400">Percentage of quests fulfilled</p>
+          </div>
+        </div>
+        
+        <div className="h-64 w-full">
+          <ResponsiveContainer width="100%" height="100%">
+            <BarChart data={stats}>
+              <CartesianGrid strokeDasharray="3 3" stroke="#334155" vertical={false} />
+              <XAxis 
+                dataKey="name" 
+                axisLine={false} 
+                tickLine={false} 
+                tick={{ fill: '#94a3b8', fontSize: 10, fontWeight: 900 }}
+                dy={10}
+              />
+              <YAxis 
+                axisLine={false} 
+                tickLine={false} 
+                tick={{ fill: '#94a3b8', fontSize: 10, fontWeight: 900 }}
+                unit="%"
+              />
+              <Tooltip 
+                contentStyle={{ backgroundColor: '#1e293b', border: 'none', borderRadius: '12px', fontSize: '12px', fontWeight: 'bold' }}
+                cursor={{ fill: '#334155', opacity: 0.4 }}
+              />
+              <Bar dataKey="rate" radius={[4, 4, 0, 0]}>
+                {stats.map((entry, index) => (
+                  <Cell key={`cell-${index}`} fill={entry.rate > 80 ? '#10b981' : entry.rate > 50 ? '#6366f1' : '#f59e0b'} />
+                ))}
+              </Bar>
+            </BarChart>
+          </ResponsiveContainer>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-2 gap-4">
+        <div className="bg-slate-800 border-2 border-slate-700 rounded-3xl p-6">
+          <h4 className="text-[10px] font-black uppercase tracking-widest text-slate-500 mb-4 text-center">Focus Areas</h4>
+          <div className="h-32 w-full">
+            <ResponsiveContainer width="100%" height="100%">
+              <PieChart>
+                <Pie
+                  data={categoryData}
+                  innerRadius={25}
+                  outerRadius={40}
+                  paddingAngle={5}
+                  dataKey="value"
+                >
+                  {categoryData.map((entry, index) => (
+                    <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
+                  ))}
+                </Pie>
+                <Tooltip />
+              </PieChart>
+            </ResponsiveContainer>
+          </div>
+        </div>
+
+        <div className="bg-slate-800 border-2 border-slate-700 rounded-3xl p-6 flex flex-col items-center justify-center text-center">
+          <h4 className="text-[10px] font-black uppercase tracking-widest text-slate-500 mb-2">Total Quests</h4>
+          <div className="text-3xl font-black text-white mb-1">{completions.length}</div>
+          <p className="text-[10px] font-bold text-indigo-400 uppercase tracking-widest">Fulfilled</p>
+        </div>
+      </div>
+    </div>
+  );
+};
+
 export default function App() {
   const [user, setUser] = useState<User | null>(null);
   const [isAuthReady, setIsAuthReady] = useState(false);
@@ -107,7 +313,8 @@ export default function App() {
     points: 10,
     xp: 20,
     category: 'Quest',
-    icon: 'Sword'
+    icon: 'Sword',
+    requiresApproval: false
   });
   
   const [isAddingReward, setIsAddingReward] = useState(false);
@@ -120,8 +327,11 @@ export default function App() {
   
   const [habits, setHabits] = useState<Habit[]>([]);
   const [rewards, setRewards] = useState<Reward[]>([]);
-  const [activeTab, setActiveTab] = useState<'quests' | 'shop'>('quests');
+  const [completions, setCompletions] = useState<CompletionLog[]>([]);
+  const [activeTab, setActiveTab] = useState<'quests' | 'shop' | 'stats' | 'parent'>('quests');
+  const [habitFilter, setHabitFilter] = useState<'All' | 'Daily' | 'Quest' | 'Skill'>('All');
   const [showLevelUp, setShowLevelUp] = useState(false);
+  const [pendingCompletions, setPendingCompletions] = useState<CompletionLog[]>([]);
 
   const activeHero = selectedChild || currentUserProfile;
 
@@ -213,7 +423,7 @@ export default function App() {
         INITIAL_HABITS.forEach(habit => {
           setDoc(doc(habitsRef, habit.id), {
             ...habit,
-            parentId: currentUserProfile.uid,
+            parentId: currentUserProfile?.uid || '',
             createdAt: new Date().toISOString()
           }).catch(e => handleFirestoreError(e, OperationType.WRITE, `users/${activeHero.uid}/habits/${habit.id}`));
         });
@@ -224,6 +434,37 @@ export default function App() {
     }, (error) => handleFirestoreError(error, OperationType.GET, `users/${activeHero.uid}/habits`));
     return () => unsubscribe();
   }, [activeHero?.uid]);
+
+  // Sync Completions for Active Hero
+  useEffect(() => {
+    if (!activeHero) return;
+    const completionsRef = collection(db, 'users', activeHero.uid, 'completions');
+    const q = query(completionsRef, orderBy('timestamp', 'desc'), limit(100));
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+      const logs = snapshot.docs.map(doc => ({ ...doc.data(), id: doc.id } as CompletionLog));
+      setCompletions(logs);
+    }, (error) => handleFirestoreError(error, OperationType.GET, `users/${activeHero.uid}/completions`));
+    return () => unsubscribe();
+  }, [activeHero?.uid]);
+
+  // Sync Pending Completions for Parent
+  useEffect(() => {
+    if (!user || currentUserProfile?.userType !== 'parent') return;
+    const q = query(
+      collectionGroup(db, 'completions'),
+      where('parentId', '==', user.uid),
+      where('status', '==', 'pending'),
+      orderBy('timestamp', 'desc')
+    );
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+      const logs = snapshot.docs.map(doc => ({ ...doc.data(), id: doc.id } as CompletionLog));
+      setPendingCompletions(logs);
+    }, (error) => {
+      // collectionGroup queries might need an index
+      console.warn('Pending completions sync error (check if index is required):', error);
+    });
+    return () => unsubscribe();
+  }, [user, currentUserProfile]);
 
   const addChild = async () => {
     if (!user || !newChildName.trim()) return;
@@ -257,7 +498,7 @@ export default function App() {
       id: habitId,
       streak: 0,
       lastCompleted: null,
-      parentId: currentUserProfile.uid,
+      parentId: currentUserProfile.userType === 'parent' ? currentUserProfile.uid : (currentUserProfile.parentId || ''),
       createdAt: new Date().toISOString()
     } as Habit;
 
@@ -270,7 +511,8 @@ export default function App() {
         points: 10,
         xp: 20,
         category: 'Quest',
-        icon: 'Sword'
+        icon: 'Sword',
+        requiresApproval: false
       });
     } catch (e) {
       handleFirestoreError(e, OperationType.WRITE, `users/${activeHero.uid}/habits/${habitId}`);
@@ -328,6 +570,54 @@ export default function App() {
     }
   };
 
+  const approveCompletion = async (log: CompletionLog) => {
+    if (!user || currentUserProfile?.userType !== 'parent') return;
+
+    try {
+      await updateDoc(doc(db, 'users', log.childId, 'completions', log.id), {
+        status: 'approved'
+      });
+
+      const childRef = doc(db, 'users', log.childId);
+      const childSnap = await getDoc(childRef);
+      if (childSnap.exists()) {
+        const childData = childSnap.data() as UserStats;
+        const newXp = (childData.xp || 0) + log.xpEarned;
+        const newPoints = (childData.totalPointsBalance || 0) + log.pointsEarned;
+        const newLifetimePoints = (childData.lifetimePoints || 0) + log.pointsEarned;
+        const newTasks = (childData.lifetimeTasksCompleted || 0) + 1;
+        
+        let newLevel = childData.level || 1;
+        if (newXp >= newLevel * XP_PER_LEVEL) {
+          newLevel += 1;
+        }
+
+        await updateDoc(childRef, {
+          xp: newXp,
+          level: newLevel,
+          totalPointsBalance: newPoints,
+          lifetimePoints: newLifetimePoints,
+          lifetimeTasksCompleted: newTasks
+        });
+      }
+    } catch (e) {
+      handleFirestoreError(e, OperationType.UPDATE, `users/${log.childId}/completions/${log.id}`);
+    }
+  };
+
+  const rejectCompletion = async (log: CompletionLog) => {
+    if (!user || currentUserProfile?.userType !== 'parent') return;
+
+    try {
+      await deleteDoc(doc(db, 'users', log.childId, 'completions', log.id));
+      await updateDoc(doc(db, 'users', log.childId, 'habits', log.habitId), {
+        lastCompleted: null
+      });
+    } catch (e) {
+      handleFirestoreError(e, OperationType.DELETE, `users/${log.childId}/completions/${log.id}`);
+    }
+  };
+
   const completeHabit = async (id: string) => {
     if (!activeHero) return;
     const habit = habits.find(h => h.id === id);
@@ -336,33 +626,49 @@ export default function App() {
     const today = new Date().toISOString().split('T')[0];
     if (habit.lastCompleted === today) return;
 
-    const newXp = (activeHero.xp || 0) + habit.xp;
-    const newPoints = (activeHero.totalPointsBalance || 0) + habit.points;
-    const newLifetimePoints = (activeHero.lifetimePoints || 0) + habit.points;
-    const newTasks = (activeHero.lifetimeTasksCompleted || 0) + 1;
-    
-    let newLevel = activeHero.level || 1;
-    if (newXp >= newLevel * XP_PER_LEVEL) {
-      newLevel += 1;
-      setShowLevelUp(true);
-      setTimeout(() => setShowLevelUp(false), 3000);
-    }
+    const needsApproval = habit.requiresApproval;
 
     try {
-      // Update stats
-      await updateDoc(doc(db, 'users', activeHero.uid), {
-        xp: newXp,
-        level: newLevel,
-        totalPointsBalance: newPoints,
-        lifetimePoints: newLifetimePoints,
-        lifetimeTasksCompleted: newTasks
-      });
+      if (!needsApproval) {
+        const newXp = (activeHero.xp || 0) + habit.xp;
+        const newPoints = (activeHero.totalPointsBalance || 0) + habit.points;
+        const newLifetimePoints = (activeHero.lifetimePoints || 0) + habit.points;
+        const newTasks = (activeHero.lifetimeTasksCompleted || 0) + 1;
+        
+        let newLevel = activeHero.level || 1;
+        if (newXp >= newLevel * XP_PER_LEVEL) {
+          newLevel += 1;
+          setShowLevelUp(true);
+          setTimeout(() => setShowLevelUp(false), 3000);
+        }
 
-      // Update habit
+        await updateDoc(doc(db, 'users', activeHero.uid), {
+          xp: newXp,
+          level: newLevel,
+          totalPointsBalance: newPoints,
+          lifetimePoints: newLifetimePoints,
+          lifetimeTasksCompleted: newTasks
+        });
+      }
+
       const isConsecutive = habit.lastCompleted === new Date(Date.now() - 86400000).toISOString().split('T')[0];
       await updateDoc(doc(db, 'users', activeHero.uid, 'habits', id), {
         streak: isConsecutive ? habit.streak + 1 : 1,
         lastCompleted: today
+      });
+
+      await addDoc(collection(db, 'users', activeHero.uid, 'completions'), {
+        habitId: id,
+        habitName: habit.name,
+        date: today,
+        timestamp: new Date().toISOString(),
+        pointsEarned: habit.points,
+        xpEarned: habit.xp,
+        category: habit.category,
+        status: needsApproval ? 'pending' : 'approved',
+        childId: activeHero.uid,
+        childName: activeHero.name,
+        parentId: activeHero.userType === 'child' ? activeHero.parentId : activeHero.uid
       });
     } catch (e) {
       handleFirestoreError(e, OperationType.UPDATE, `users/${activeHero.uid}`);
@@ -639,6 +945,30 @@ export default function App() {
             <ShoppingBag size={16} />
             Shop
           </button>
+          <button 
+            onClick={() => setActiveTab('stats')}
+            className={`flex-1 py-3 rounded-xl font-black uppercase tracking-widest text-xs flex items-center justify-center gap-2 transition-all ${
+              activeTab === 'stats' 
+              ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-500/20' 
+              : 'bg-slate-800 text-slate-400 hover:bg-slate-700'
+            }`}
+          >
+            <BarChart3 size={16} />
+            Stats
+          </button>
+          {currentUserProfile?.userType === 'parent' && (
+            <button 
+              onClick={() => setActiveTab('parent')}
+              className={`flex-1 py-3 rounded-xl font-black uppercase tracking-widest text-xs flex items-center justify-center gap-2 transition-all ${
+                activeTab === 'parent' 
+                ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-500/20' 
+                : 'bg-slate-800 text-slate-400 hover:bg-slate-700'
+              }`}
+            >
+              <ShieldCheck size={16} />
+              Parent
+            </button>
+          )}
         </div>
 
         {activeTab === 'quests' ? (
@@ -678,6 +1008,32 @@ export default function App() {
                   />
                   <div className="grid grid-cols-2 gap-4">
                     <div>
+                      <label className="text-[10px] font-black uppercase tracking-widest text-slate-500 ml-1">Category</label>
+                      <select 
+                        value={newHabit.category}
+                        onChange={e => setNewHabit({...newHabit, category: e.target.value as any})}
+                        className="w-full bg-slate-900 border-2 border-slate-700 rounded-xl p-3 outline-none focus:border-indigo-500 transition-colors text-slate-200"
+                      >
+                        <option value="Daily">Daily</option>
+                        <option value="Quest">Quest</option>
+                        <option value="Skill">Skill</option>
+                      </select>
+                    </div>
+                    <div>
+                      <label className="text-[10px] font-black uppercase tracking-widest text-slate-500 ml-1">Icon</label>
+                      <select 
+                        value={newHabit.icon}
+                        onChange={e => setNewHabit({...newHabit, icon: e.target.value})}
+                        className="w-full bg-slate-900 border-2 border-slate-700 rounded-xl p-3 outline-none focus:border-indigo-500 transition-colors text-slate-200"
+                      >
+                        {Object.keys(ICON_MAP).map(icon => (
+                          <option key={icon} value={icon}>{icon}</option>
+                        ))}
+                      </select>
+                    </div>
+                  </div>
+                  <div className="grid grid-cols-2 gap-4">
+                    <div>
                       <label className="text-[10px] font-black uppercase tracking-widest text-slate-500 ml-1">Gold Reward</label>
                       <input 
                         type="number"
@@ -696,6 +1052,20 @@ export default function App() {
                       />
                     </div>
                   </div>
+
+                  <div className="flex items-center gap-3 p-3 bg-slate-900 border-2 border-slate-700 rounded-xl">
+                    <input 
+                      type="checkbox"
+                      id="requiresApproval"
+                      checked={newHabit.requiresApproval}
+                      onChange={e => setNewHabit({...newHabit, requiresApproval: e.target.checked})}
+                      className="w-5 h-5 rounded border-slate-700 text-indigo-600 focus:ring-indigo-500 bg-slate-800"
+                    />
+                    <label htmlFor="requiresApproval" className="text-xs font-black uppercase tracking-widest text-slate-400 cursor-pointer">
+                      Requires Parent Approval
+                    </label>
+                  </div>
+
                   <div className="flex gap-3">
                     <button 
                       onClick={addHabit}
@@ -713,9 +1083,28 @@ export default function App() {
                 </div>
               </motion.div>
             )}
+
+            {/* Habit Filters */}
+            <div className="flex gap-2 mb-4 overflow-x-auto pb-2 scrollbar-hide">
+              {(['All', 'Daily', 'Quest', 'Skill'] as const).map((filter) => (
+                <button
+                  key={filter}
+                  onClick={() => setHabitFilter(filter)}
+                  className={`px-4 py-2 rounded-full font-black uppercase tracking-widest text-[10px] transition-all whitespace-nowrap ${
+                    habitFilter === filter 
+                    ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-500/20' 
+                    : 'bg-slate-800 text-slate-400 hover:bg-slate-700'
+                  }`}
+                >
+                  {filter}
+                </button>
+              ))}
+            </div>
             
             <div className="grid gap-3">
-              {habits.map((habit) => {
+              {habits
+                .filter(h => habitFilter === 'All' || h.category === habitFilter)
+                .map((habit) => {
                 const Icon = ICON_MAP[habit.icon] || Star;
                 const isCompletedToday = habit.lastCompleted === new Date().toISOString().split('T')[0];
                 
@@ -791,7 +1180,7 @@ export default function App() {
               })}
             </div>
           </div>
-        ) : (
+        ) : activeTab === 'shop' ? (
           <div className="space-y-4">
             <div className="flex items-center justify-between mb-2">
               <h2 className="text-sm font-black uppercase tracking-widest text-slate-500">Merchant's Goods</h2>
@@ -926,6 +1315,125 @@ export default function App() {
               })}
             </div>
           </div>
+        ) : activeTab === 'parent' ? (
+          <div className="space-y-6">
+            <div className="flex items-center justify-between">
+              <h2 className="text-sm font-black uppercase tracking-widest text-slate-500">Parent Command Center</h2>
+              <button 
+                onClick={() => setIsAddingChild(true)}
+                className="flex items-center gap-2 px-3 py-1.5 bg-indigo-600/20 text-indigo-400 rounded-lg text-[10px] font-black uppercase tracking-widest hover:bg-indigo-600/30 transition-colors"
+              >
+                <UserPlus size={14} />
+                Add Hero
+              </button>
+            </div>
+
+            {/* Pending Approvals */}
+            <div className="space-y-4">
+              <h3 className="text-[10px] font-black uppercase tracking-widest text-slate-400 flex items-center gap-2">
+                <Clock size={12} />
+                Pending Approvals ({pendingCompletions.length})
+              </h3>
+              
+              {pendingCompletions.length === 0 ? (
+                <div className="bg-slate-800/50 border-2 border-dashed border-slate-700 rounded-2xl p-8 text-center">
+                  <p className="text-slate-500 text-xs font-medium">No pending quests to approve!</p>
+                </div>
+              ) : (
+                <div className="space-y-3">
+                  {pendingCompletions.map(log => (
+                    <motion.div 
+                      key={log.id}
+                      layout
+                      initial={{ opacity: 0, y: 10 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      className="bg-slate-800 border border-slate-700 rounded-2xl p-4 flex items-center justify-between gap-4"
+                    >
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-2 mb-1">
+                          <span className="text-[10px] font-black uppercase tracking-widest px-2 py-0.5 bg-indigo-500/20 text-indigo-400 rounded-full">
+                            {log.childName}
+                          </span>
+                          <span className="text-[10px] font-black uppercase tracking-widest text-slate-500">
+                            {new Date(log.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                          </span>
+                        </div>
+                        <h4 className="text-sm font-bold text-slate-200 truncate">{log.habitName}</h4>
+                        <div className="flex items-center gap-3 mt-1">
+                          <span className="text-[10px] font-bold text-yellow-500 flex items-center gap-1">
+                            <Zap size={10} fill="currentColor" /> +{log.pointsEarned} Points
+                          </span>
+                          <span className="text-[10px] font-bold text-indigo-400 flex items-center gap-1">
+                            <Sword size={10} /> +{log.xpEarned} XP
+                          </span>
+                        </div>
+                      </div>
+                      <div className="flex gap-2">
+                        <button 
+                          onClick={() => rejectCompletion(log)}
+                          className="p-2 bg-red-500/10 text-red-400 hover:bg-red-500/20 rounded-xl transition-colors"
+                          title="Reject"
+                        >
+                          <XCircle size={20} />
+                        </button>
+                        <button 
+                          onClick={() => approveCompletion(log)}
+                          className="p-2 bg-green-500/10 text-green-400 hover:bg-green-500/20 rounded-xl transition-colors"
+                          title="Approve"
+                        >
+                          <CheckCircle2 size={20} />
+                        </button>
+                      </div>
+                    </motion.div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            {/* Heroes Overview */}
+            <div className="space-y-4">
+              <h3 className="text-[10px] font-black uppercase tracking-widest text-slate-400 flex items-center gap-2">
+                <Shield size={12} />
+                Heroes Overview
+              </h3>
+              <div className="grid grid-cols-1 gap-3">
+                {children.map(child => (
+                  <button 
+                    key={child.uid}
+                    onClick={() => {
+                      setSelectedChild(child);
+                      setActiveTab('quests');
+                    }}
+                    className="bg-slate-800 border border-slate-700 rounded-2xl p-4 flex items-center gap-4 hover:border-indigo-500/50 transition-all text-left group"
+                  >
+                    <div className="w-12 h-12 bg-gradient-to-br from-indigo-500 to-purple-500 rounded-xl flex items-center justify-center text-white font-black text-xl shadow-lg group-hover:scale-110 transition-transform">
+                      {child.name[0]}
+                    </div>
+                    <div className="flex-1">
+                      <div className="flex items-center justify-between mb-1">
+                        <h4 className="text-sm font-bold text-slate-200">{child.name}</h4>
+                        <span className="text-[10px] font-black uppercase tracking-widest text-indigo-400">Level {child.level}</span>
+                      </div>
+                      <div className="flex items-center gap-4">
+                        <div className="flex items-center gap-1 text-[10px] font-bold text-yellow-500">
+                          <Zap size={10} fill="currentColor" /> {child.totalPointsBalance}
+                        </div>
+                        <div className="flex items-center gap-1 text-[10px] font-bold text-indigo-400">
+                          <Sword size={10} /> {child.xp} XP
+                        </div>
+                        <div className="flex items-center gap-1 text-[10px] font-bold text-slate-500">
+                          <CheckCircle2 size={10} /> {child.lifetimeTasksCompleted} Done
+                        </div>
+                      </div>
+                    </div>
+                    <ChevronRight size={16} className="text-slate-600 group-hover:text-indigo-400 transition-colors" />
+                  </button>
+                ))}
+              </div>
+            </div>
+          </div>
+        ) : (
+          <StatsView completions={completions} habits={habits} />
         )}
       </main>
 

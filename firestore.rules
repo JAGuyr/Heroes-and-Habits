@@ -64,7 +64,21 @@ service cloud.firestore {
              data.points is number && data.points >= 0 &&
              data.xp is number && data.xp >= 0 &&
              data.parentId is string &&
-             (!('category' in data) || data.category in ['Quest', 'Daily', 'Skill']);
+             (!('category' in data) || data.category in ['Quest', 'Daily', 'Skill']) &&
+             (!('requiresApproval' in data) || data.requiresApproval is bool);
+    }
+
+    function isValidCompletionLog(data) {
+      return data.keys().hasAll(['habitId', 'date', 'timestamp', 'pointsEarned', 'xpEarned']) &&
+             data.habitId is string &&
+             data.date is string &&
+             data.timestamp is string &&
+             data.pointsEarned is number &&
+             data.xpEarned is number &&
+             (!('status' in data) || data.status in ['pending', 'approved']) &&
+             (!('childId' in data) || data.childId is string) &&
+             (!('childName' in data) || data.childName is string) &&
+             (!('parentId' in data) || data.parentId is string);
     }
 
     function isValidReward(data) {
@@ -85,6 +99,17 @@ service cloud.firestore {
         allow create: if (isOwner(userId) || (isAuthenticated() && get(/databases/$(database)/documents/users/$(userId)).data.parentId == request.auth.uid)) && isValidHabit(request.resource.data);
         allow update, delete: if isOwner(userId) || (isAuthenticated() && (resource.data.parentId == request.auth.uid || get(/databases/$(database)/documents/users/$(userId)).data.parentId == request.auth.uid));
       }
+
+      match /completions/{completionId} {
+        allow read: if isOwner(userId) || (isAuthenticated() && get(/databases/$(database)/documents/users/$(userId)).data.parentId == request.auth.uid);
+        allow create: if (isOwner(userId) || (isAuthenticated() && get(/databases/$(database)/documents/users/$(userId)).data.parentId == request.auth.uid)) && isValidCompletionLog(request.resource.data);
+        allow update: if isAuthenticated() && (resource.data.parentId == request.auth.uid || get(/databases/$(database)/documents/users/$(userId)).data.parentId == request.auth.uid);
+        allow delete: if isOwner(userId) || (isAuthenticated() && get(/databases/$(database)/documents/users/$(userId)).data.parentId == request.auth.uid);
+      }
+    }
+
+    match /{path=**}/completions/{completionId} {
+      allow read: if isAuthenticated() && (resource.data.parentId == request.auth.uid || resource.data.childId == request.auth.uid);
     }
 
     match /rewards/{rewardId} {
