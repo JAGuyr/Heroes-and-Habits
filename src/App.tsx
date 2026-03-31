@@ -391,6 +391,9 @@ export default function App() {
     try {
       await signIn();
     } catch (error: any) {
+      if (error.code === 'auth/popup-closed-by-user') {
+        return;
+      }
       setAuthError(error);
     }
   };

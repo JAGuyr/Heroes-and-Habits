@@ -3,7 +3,7 @@ import { getAuth, GoogleAuthProvider, signInWithPopup, signOut } from 'firebase/
 import { getFirestore } from 'firebase/firestore';
 
 // Use a glob import to make the config file optional during build
-const configs = import.meta.glob('../firebase-applet-config.json', { eager: true });
+const configs = (import.meta as any).glob('../firebase-applet-config.json', { eager: true });
 const firebaseConfigJson = (configs['../firebase-applet-config.json'] as any)?.default || {};
 
 // Helper to get environment variable with fallback and sanitization
@@ -40,7 +40,9 @@ export const signIn = async () => {
     const result = await signInWithPopup(auth, googleProvider);
     return result.user;
   } catch (error: any) {
-    console.error("Firebase Auth Error:", error);
+    if (error.code !== 'auth/popup-closed-by-user') {
+      console.error("Firebase Auth Error:", error);
+    }
     throw {
       code: error.code,
       message: error.message,
