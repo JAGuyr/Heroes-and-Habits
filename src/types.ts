@@ -52,4 +52,6 @@ export interface CompletionLog {
   childId: string;
   childName: string;
   parentId: string;
+  rewardId?: string;
+  rewardCost?: number;
 }

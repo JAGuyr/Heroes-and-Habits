@@ -349,6 +349,20 @@ export default function App() {
 
   const activeHero = selectedChild || currentUserProfile;
 
+  // Sync selectedChild with children array to keep data fresh
+  useEffect(() => {
+    if (selectedChild && children.length > 0) {
+      const updatedChild = children.find(c => c.uid === selectedChild.uid);
+      if (updatedChild && (
+        updatedChild.totalPointsBalance !== selectedChild.totalPointsBalance ||
+        updatedChild.xp !== selectedChild.xp ||
+        updatedChild.level !== selectedChild.level
+      )) {
+        setSelectedChild(updatedChild);
+      }
+    }
+  }, [children, selectedChild]);
+
   // Sync all habits for parent zone
   useEffect(() => {
     if (activeTab !== 'parent' || !user || currentUserProfile?.userType !== 'parent' || children.length === 0) return;
@@ -746,6 +760,9 @@ export default function App() {
         status: 'approved'
       });
 
+      // If it's a reward redemption, we don't add points or XP (they were already deducted)
+      if (log.habitId === 'reward_redemption') return;
+
       const childRef = doc(db, 'users', log.childId);
       const childSnap = await getDoc(childRef);
       if (childSnap.exists()) {
@@ -778,9 +795,22 @@ export default function App() {
 
     try {
       await deleteDoc(doc(db, 'users', log.childId, 'completions', log.id));
-      await updateDoc(doc(db, 'users', log.childId, 'habits', log.habitId), {
-        lastCompleted: null
-      });
+      
+      if (log.habitId === 'reward_redemption') {
+        // Refund gold for rejected redemptions
+        const childRef = doc(db, 'users', log.childId);
+        const childSnap = await getDoc(childRef);
+        if (childSnap.exists()) {
+          const childData = childSnap.data() as UserStats;
+          await updateDoc(childRef, {
+            totalPointsBalance: (childData.totalPointsBalance || 0) + (log.rewardCost || 0)
+          });
+        }
+      } else {
+        await updateDoc(doc(db, 'users', log.childId, 'habits', log.habitId), {
+          lastCompleted: null
+        });
+      }
     } catch (e) {
       handleFirestoreError(e, OperationType.DELETE, `users/${log.childId}/completions/${log.id}`);
     }
@@ -850,7 +880,24 @@ export default function App() {
       await updateDoc(doc(db, 'users', activeHero.uid), {
         totalPointsBalance: activeHero.totalPointsBalance - reward.pointCost
       });
-      alert(`Redeemed: ${reward.title}! Enjoy your reward.`);
+      
+      // Create a log entry for the parent to see
+      const logId = `redeem_${Date.now()}`;
+      await setDoc(doc(db, 'users', activeHero.uid, 'completions', logId), {
+        habitId: 'reward_redemption',
+        habitName: `Redeemed: ${reward.title}`,
+        date: new Date().toISOString().split('T')[0],
+        timestamp: new Date().toISOString(),
+        pointsEarned: 0,
+        xpEarned: 0,
+        category: 'Shop',
+        status: 'pending',
+        childId: activeHero.uid,
+        childName: activeHero.name,
+        parentId: activeHero.userType === 'child' ? activeHero.parentId : activeHero.uid,
+        rewardId: reward.id,
+        rewardCost: reward.pointCost
+      });
     } catch (e) {
       handleFirestoreError(e, OperationType.UPDATE, `users/${activeHero.uid}`);
     }
@@ -1049,7 +1096,7 @@ export default function App() {
                   <Coins size={18} />
                   <span className="text-xl font-black tabular-nums">{activeHero?.totalPointsBalance || 0}</span>
                 </div>
-                <span className="text-[10px] text-slate-500 font-bold uppercase tracking-tighter">Gold Earned</span>
+                <span className="text-[10px] text-slate-500 font-bold uppercase tracking-tighter">Gold Balance</span>
               </div>
               <div className="flex flex-col gap-1">
                 {currentUserProfile?.userType === 'parent' && (
@@ -1835,11 +1882,15 @@ export default function App() {
                       layout
                       initial={{ opacity: 0, y: 10 }}
                       animate={{ opacity: 1, y: 0 }}
-                      className="bg-slate-800 border border-slate-700 rounded-2xl p-4 flex items-center justify-between gap-4"
+                      className={`bg-slate-800 border rounded-2xl p-4 flex items-center justify-between gap-4 ${
+                        log.habitId === 'reward_redemption' ? 'border-yellow-500/50 bg-yellow-500/5' : 'border-slate-700'
+                      }`}
                     >
                       <div className="flex-1 min-w-0">
                         <div className="flex items-center gap-2 mb-1">
-                          <span className="text-[10px] font-black uppercase tracking-widest px-2 py-0.5 bg-indigo-500/20 text-indigo-400 rounded-full">
+                          <span className={`text-[10px] font-black uppercase tracking-widest px-2 py-0.5 rounded-full ${
+                            log.habitId === 'reward_redemption' ? 'bg-yellow-500/20 text-yellow-500' : 'bg-indigo-500/20 text-indigo-400'
+                          }`}>
                             {log.childName}
                           </span>
                           <span className="text-[10px] font-black uppercase tracking-widest text-slate-500">
@@ -1848,12 +1899,20 @@ export default function App() {
                         </div>
                         <h4 className="text-sm font-bold text-slate-200 truncate">{log.habitName}</h4>
                         <div className="flex items-center gap-3 mt-1">
-                          <span className="text-[10px] font-bold text-yellow-500 flex items-center gap-1">
-                            <Zap size={10} fill="currentColor" /> +{log.pointsEarned} Points
-                          </span>
-                          <span className="text-[10px] font-bold text-indigo-400 flex items-center gap-1">
-                            <Sword size={10} /> +{log.xpEarned} XP
-                          </span>
+                          {log.habitId === 'reward_redemption' ? (
+                            <span className="text-[10px] font-bold text-yellow-500 flex items-center gap-1">
+                              <Coins size={10} /> Cost: {log.rewardCost} Gold
+                            </span>
+                          ) : (
+                            <>
+                              <span className="text-[10px] font-bold text-yellow-500 flex items-center gap-1">
+                                <Zap size={10} fill="currentColor" /> +{log.pointsEarned} Points
+                              </span>
+                              <span className="text-[10px] font-bold text-indigo-400 flex items-center gap-1">
+                                <Sword size={10} /> +{log.xpEarned} XP
+                              </span>
+                            </>
+                          )}
                         </div>
                       </div>
                       <div className="flex gap-2">
