@@ -34,7 +34,9 @@ import {
   XCircle,
   Clock,
   UserPlus,
-  Lock
+  Lock,
+  Edit2,
+  Edit
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { Habit, Reward, UserStats, CompletionLog } from './types';
@@ -338,8 +340,37 @@ export default function App() {
   const [isPinVerified, setIsPinVerified] = useState(false);
   const [pinInput, setPinInput] = useState('');
   const [pinError, setPinError] = useState('');
+  const [editingHabit, setEditingHabit] = useState<Habit | null>(null);
+  const [allHabits, setAllHabits] = useState<Habit[]>([]);
+  
+  const [isAdjustingGold, setIsAdjustingGold] = useState(false);
+  const [goldAdjustmentChild, setGoldAdjustmentChild] = useState<UserStats | null>(null);
+  const [goldAdjustmentAmount, setGoldAdjustmentAmount] = useState<number>(0);
 
   const activeHero = selectedChild || currentUserProfile;
+
+  // Sync all habits for parent zone
+  useEffect(() => {
+    if (activeTab !== 'parent' || !user || currentUserProfile?.userType !== 'parent' || children.length === 0) return;
+    
+    const unsubscribes = children.map(child => {
+      const habitsRef = collection(db, 'users', child.uid, 'habits');
+      return onSnapshot(habitsRef, (snapshot) => {
+        const childHabits = snapshot.docs.map(doc => ({ 
+          ...doc.data(), 
+          id: doc.id,
+          childId: child.uid 
+        } as Habit));
+        
+        setAllHabits(prev => {
+          const otherHabits = prev.filter(h => h.childId !== child.uid);
+          return [...otherHabits, ...childHabits];
+        });
+      });
+    });
+    
+    return () => unsubscribes.forEach(unsub => unsub());
+  }, [activeTab, user, currentUserProfile, children]);
 
   // Reset PIN verification when switching tabs
   useEffect(() => {
@@ -443,7 +474,11 @@ export default function App() {
           }).catch(e => handleFirestoreError(e, OperationType.WRITE, `users/${activeHero.uid}/habits/${habit.id}`));
         });
       } else {
-        const habitsList = snapshot.docs.map(doc => ({ ...doc.data(), id: doc.id } as Habit));
+        const habitsList = snapshot.docs.map(doc => ({ 
+          ...doc.data(), 
+          id: doc.id,
+          childId: activeHero.uid // Ensure childId is present
+        } as Habit));
         setHabits(habitsList);
       }
     }, (error) => handleFirestoreError(error, OperationType.GET, `users/${activeHero.uid}/habits`));
@@ -539,6 +574,7 @@ export default function App() {
       streak: 0,
       lastCompleted: null,
       parentId: currentUserProfile.userType === 'parent' ? currentUserProfile.uid : (currentUserProfile.parentId || ''),
+      childId: activeHero.uid,
       createdAt: new Date().toISOString()
     } as Habit;
 
@@ -583,6 +619,41 @@ export default function App() {
     }
   };
 
+  const adjustGold = async () => {
+    if (!goldAdjustmentChild || goldAdjustmentAmount === 0 || !user) return;
+    
+    const newBalance = Math.max(0, goldAdjustmentChild.totalPointsBalance + goldAdjustmentAmount);
+    const newLifetime = goldAdjustmentAmount > 0 ? goldAdjustmentChild.lifetimePoints + goldAdjustmentAmount : goldAdjustmentChild.lifetimePoints;
+
+    try {
+      await updateDoc(doc(db, 'users', goldAdjustmentChild.uid), {
+        totalPointsBalance: newBalance,
+        lifetimePoints: newLifetime
+      });
+      
+      // Add a log entry for manual adjustment
+      const logId = `manual_${Date.now()}`;
+      await setDoc(doc(db, 'users', goldAdjustmentChild.uid, 'completions', logId), {
+        habitId: 'manual_adjustment',
+        habitName: goldAdjustmentAmount > 0 ? 'Parental Reward' : 'Parental Penalty',
+        date: new Date().toISOString().split('T')[0],
+        timestamp: new Date().toISOString(),
+        pointsEarned: goldAdjustmentAmount,
+        xpEarned: 0,
+        status: 'approved',
+        childId: goldAdjustmentChild.uid,
+        childName: goldAdjustmentChild.name,
+        parentId: user.uid
+      });
+
+      setIsAdjustingGold(false);
+      setGoldAdjustmentChild(null);
+      setGoldAdjustmentAmount(0);
+    } catch (e) {
+      handleFirestoreError(e, OperationType.UPDATE, `users/${goldAdjustmentChild.uid}`);
+    }
+  };
+
   const assignQuestToChildren = async () => {
     if (!user || !currentUserProfile || !newHabit.name?.trim() || selectedChildrenForQuest.length === 0) return;
     
@@ -597,6 +668,7 @@ export default function App() {
           streak: 0,
           lastCompleted: null,
           parentId: user.uid,
+          childId: childId,
           createdAt: timestamp
         } as Habit;
         return setDoc(doc(db, 'users', childId, 'habits', habitId), habitData);
@@ -616,6 +688,26 @@ export default function App() {
       });
     } catch (e) {
       handleFirestoreError(e, OperationType.WRITE, `multiple_habits`);
+    }
+  };
+
+  const updateHabit = async () => {
+    if (!editingHabit || !editingHabit.childId || !editingHabit.name?.trim()) return;
+    
+    try {
+      const habitRef = doc(db, 'users', editingHabit.childId, 'habits', editingHabit.id);
+      await updateDoc(habitRef, {
+        name: editingHabit.name,
+        description: editingHabit.description,
+        points: editingHabit.points,
+        xp: editingHabit.xp,
+        category: editingHabit.category,
+        icon: editingHabit.icon,
+        requiresApproval: editingHabit.requiresApproval
+      });
+      setEditingHabit(null);
+    } catch (e) {
+      handleFirestoreError(e, OperationType.UPDATE, `users/${editingHabit.childId}/habits/${editingHabit.id}`);
     }
   };
 
@@ -1216,12 +1308,22 @@ export default function App() {
 
                       <div className="flex items-center gap-2">
                         {currentUserProfile?.userType === 'parent' && (
-                          <button 
-                            onClick={(e) => deleteHabit(e, habit.id)}
-                            className="p-2 text-slate-600 hover:text-red-500 transition-colors"
-                          >
-                            <Trash2 size={16} />
-                          </button>
+                          <div className="flex gap-1">
+                            <button 
+                              onClick={() => setEditingHabit(habit)}
+                              className="p-2 text-slate-600 hover:text-indigo-400 transition-colors"
+                              title="Edit Quest"
+                            >
+                              <Edit2 size={16} />
+                            </button>
+                            <button 
+                              onClick={(e) => deleteHabit(e, habit.id)}
+                              className="p-2 text-slate-600 hover:text-red-500 transition-colors"
+                              title="Delete Quest"
+                            >
+                              <Trash2 size={16} />
+                            </button>
+                          </div>
                         )}
                         <button 
                           onClick={() => completeHabit(habit.id)}
@@ -1659,6 +1761,61 @@ export default function App() {
               </motion.div>
             )}
 
+            {isAdjustingGold && goldAdjustmentChild && (
+              <motion.div 
+                initial={{ height: 0, opacity: 0 }}
+                animate={{ height: 'auto', opacity: 1 }}
+                className="bg-slate-800 border-2 border-yellow-500 rounded-2xl p-6 mb-6 overflow-hidden"
+              >
+                <h3 className="text-sm font-black uppercase tracking-widest text-yellow-500 mb-4 flex items-center gap-2">
+                  <Coins size={16} />
+                  Adjust Gold for {goldAdjustmentChild.name}
+                </h3>
+                <div className="space-y-4">
+                  <div className="flex items-center gap-4">
+                    <button 
+                      onClick={() => setGoldAdjustmentAmount(prev => prev - 10)}
+                      className="w-12 h-12 bg-slate-900 border-2 border-slate-700 rounded-xl flex items-center justify-center text-red-400 hover:border-red-500 transition-colors font-black"
+                    >
+                      -10
+                    </button>
+                    <input 
+                      type="number"
+                      value={goldAdjustmentAmount}
+                      onChange={e => setGoldAdjustmentAmount(parseInt(e.target.value) || 0)}
+                      className="flex-1 bg-slate-900 border-2 border-slate-700 rounded-xl p-3 text-center text-xl font-black text-yellow-500 outline-none focus:border-yellow-500 transition-colors"
+                    />
+                    <button 
+                      onClick={() => setGoldAdjustmentAmount(prev => prev + 10)}
+                      className="w-12 h-12 bg-slate-900 border-2 border-slate-700 rounded-xl flex items-center justify-center text-green-400 hover:border-green-500 transition-colors font-black"
+                    >
+                      +10
+                    </button>
+                  </div>
+                  
+                  <div className="flex gap-3">
+                    <button 
+                      onClick={adjustGold}
+                      disabled={goldAdjustmentAmount === 0}
+                      className="flex-1 py-3 bg-yellow-600 hover:bg-yellow-500 disabled:bg-slate-700 disabled:text-slate-500 text-white rounded-xl font-black uppercase tracking-widest text-xs transition-all"
+                    >
+                      Confirm Adjustment
+                    </button>
+                    <button 
+                      onClick={() => {
+                        setIsAdjustingGold(false);
+                        setGoldAdjustmentChild(null);
+                        setGoldAdjustmentAmount(0);
+                      }}
+                      className="flex-1 py-3 bg-slate-700 hover:bg-slate-600 text-slate-300 rounded-xl font-black uppercase tracking-widest text-xs transition-all"
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                </div>
+              </motion.div>
+            )}
+
             {/* Pending Approvals */}
             <div className="space-y-4">
               <h3 className="text-[10px] font-black uppercase tracking-widest text-slate-400 flex items-center gap-2">
@@ -1757,9 +1914,81 @@ export default function App() {
                         </div>
                       </div>
                     </div>
-                    <ChevronRight size={16} className="text-slate-600 group-hover:text-indigo-400 transition-colors" />
+                    <div className="flex items-center gap-2">
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setGoldAdjustmentChild(child);
+                          setGoldAdjustmentAmount(0);
+                          setIsAdjustingGold(true);
+                        }}
+                        className="p-2 bg-yellow-500/10 text-yellow-500 hover:bg-yellow-500/20 rounded-xl transition-colors"
+                        title="Adjust Gold"
+                      >
+                        <Coins size={16} />
+                      </button>
+                      <ChevronRight size={16} className="text-slate-600 group-hover:text-indigo-400 transition-colors" />
+                    </div>
                   </button>
                 ))}
+              </div>
+            </div>
+
+            {/* Quest Management */}
+            <div className="space-y-4">
+              <h3 className="text-[10px] font-black uppercase tracking-widest text-slate-400 flex items-center gap-2">
+                <Sword size={12} />
+                Manage All Quests
+              </h3>
+              <div className="space-y-3">
+                {children.map(child => {
+                  const childHabits = allHabits.filter(h => h.childId === child.uid);
+                  if (childHabits.length === 0) return null;
+                  
+                  return (
+                    <div key={child.uid} className="bg-slate-800/50 border border-slate-700 rounded-2xl p-4 space-y-3">
+                      <h4 className="text-[10px] font-black uppercase tracking-widest text-indigo-400 flex items-center gap-2">
+                        {child.name}'s Quests
+                      </h4>
+                      <div className="grid grid-cols-1 gap-2">
+                        {childHabits.map(habit => (
+                          <div key={habit.id} className="bg-slate-800 border border-slate-700 rounded-xl p-3 flex items-center justify-between gap-3">
+                            <div className="flex items-center gap-3 min-w-0">
+                              <div className="w-8 h-8 bg-slate-900 rounded-lg flex items-center justify-center text-indigo-400">
+                                {(() => {
+                                  const Icon = ICON_MAP[habit.icon] || Sword;
+                                  return <Icon size={16} />;
+                                })()}
+                              </div>
+                              <div className="min-w-0">
+                                <p className="text-xs font-bold text-slate-200 truncate">{habit.name}</p>
+                                <p className="text-[10px] text-slate-500 uppercase font-black tracking-widest">{habit.category}</p>
+                              </div>
+                            </div>
+                            <div className="flex gap-1">
+                              <button 
+                                onClick={() => setEditingHabit(habit)}
+                                className="p-2 text-slate-500 hover:text-indigo-400 transition-colors"
+                              >
+                                <Edit2 size={14} />
+                              </button>
+                              <button 
+                                onClick={(e) => {
+                                  // We need to set activeHero temporarily to delete
+                                  setSelectedChild(child);
+                                  deleteHabit(e, habit.id);
+                                }}
+                                className="p-2 text-slate-500 hover:text-red-500 transition-colors"
+                              >
+                                <Trash2 size={14} />
+                              </button>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  );
+                })}
               </div>
             </div>
           </div>
@@ -1768,6 +1997,133 @@ export default function App() {
           <StatsView completions={completions} habits={habits} />
         )}
       </main>
+
+      {/* Edit Habit Modal */}
+      <AnimatePresence>
+        {editingHabit && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+            <motion.div 
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              onClick={() => setEditingHabit(null)}
+              className="absolute inset-0 bg-slate-950/80 backdrop-blur-sm"
+            />
+            <motion.div 
+              initial={{ scale: 0.9, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.9, opacity: 0 }}
+              className="relative w-full max-w-lg bg-slate-800 border-2 border-indigo-500 rounded-3xl p-6 shadow-2xl overflow-hidden"
+            >
+              <div className="flex items-center justify-between mb-6">
+                <h3 className="text-lg font-black uppercase tracking-widest text-indigo-400">Edit Quest</h3>
+                <button 
+                  onClick={() => setEditingHabit(null)}
+                  className="p-2 text-slate-500 hover:text-white transition-colors"
+                >
+                  <XCircle size={24} />
+                </button>
+              </div>
+
+              <div className="space-y-4">
+                <div>
+                  <label className="text-[10px] font-black uppercase tracking-widest text-slate-500 ml-1">Quest Name</label>
+                  <input 
+                    type="text"
+                    value={editingHabit.name}
+                    onChange={e => setEditingHabit({...editingHabit, name: e.target.value})}
+                    className="w-full bg-slate-900 border-2 border-slate-700 rounded-xl p-3 outline-none focus:border-indigo-500 transition-colors"
+                  />
+                </div>
+                <div>
+                  <label className="text-[10px] font-black uppercase tracking-widest text-slate-500 ml-1">Description</label>
+                  <textarea 
+                    value={editingHabit.description}
+                    onChange={e => setEditingHabit({...editingHabit, description: e.target.value})}
+                    className="w-full bg-slate-900 border-2 border-slate-700 rounded-xl p-3 outline-none focus:border-indigo-500 transition-colors h-20"
+                  />
+                </div>
+                
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <label className="text-[10px] font-black uppercase tracking-widest text-slate-500 ml-1">Category</label>
+                    <select 
+                      value={editingHabit.category}
+                      onChange={e => setEditingHabit({...editingHabit, category: e.target.value as any})}
+                      className="w-full bg-slate-900 border-2 border-slate-700 rounded-xl p-3 outline-none focus:border-indigo-500 transition-colors text-slate-200"
+                    >
+                      <option value="Daily">Daily</option>
+                      <option value="Quest">Quest</option>
+                      <option value="Skill">Skill</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label className="text-[10px] font-black uppercase tracking-widest text-slate-500 ml-1">Icon</label>
+                    <select 
+                      value={editingHabit.icon}
+                      onChange={e => setEditingHabit({...editingHabit, icon: e.target.value})}
+                      className="w-full bg-slate-900 border-2 border-slate-700 rounded-xl p-3 outline-none focus:border-indigo-500 transition-colors text-slate-200"
+                    >
+                      {Object.keys(ICON_MAP).map(icon => (
+                        <option key={icon} value={icon}>{icon}</option>
+                      ))}
+                    </select>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <label className="text-[10px] font-black uppercase tracking-widest text-slate-500 ml-1">Gold Reward</label>
+                    <input 
+                      type="number"
+                      value={editingHabit.points}
+                      onChange={e => setEditingHabit({...editingHabit, points: parseInt(e.target.value) || 0})}
+                      className="w-full bg-slate-900 border-2 border-slate-700 rounded-xl p-3 outline-none focus:border-indigo-500 transition-colors"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-[10px] font-black uppercase tracking-widest text-slate-500 ml-1">XP Reward</label>
+                    <input 
+                      type="number"
+                      value={editingHabit.xp}
+                      onChange={e => setEditingHabit({...editingHabit, xp: parseInt(e.target.value) || 0})}
+                      className="w-full bg-slate-900 border-2 border-slate-700 rounded-xl p-3 outline-none focus:border-indigo-500 transition-colors"
+                    />
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-3 p-3 bg-slate-900 border-2 border-slate-700 rounded-xl">
+                  <input 
+                    type="checkbox"
+                    id="editRequiresApproval"
+                    checked={editingHabit.requiresApproval}
+                    onChange={e => setEditingHabit({...editingHabit, requiresApproval: e.target.checked})}
+                    className="w-5 h-5 rounded border-slate-700 text-indigo-600 focus:ring-indigo-500 bg-slate-800"
+                  />
+                  <label htmlFor="editRequiresApproval" className="text-xs font-black uppercase tracking-widest text-slate-400 cursor-pointer">
+                    Requires Parent Approval
+                  </label>
+                </div>
+
+                <div className="flex gap-3 pt-4">
+                  <button 
+                    onClick={updateHabit}
+                    className="flex-1 py-3 bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl font-black uppercase tracking-widest text-xs transition-all shadow-lg shadow-indigo-600/20"
+                  >
+                    Save Changes
+                  </button>
+                  <button 
+                    onClick={() => setEditingHabit(null)}
+                    className="flex-1 py-3 bg-slate-700 hover:bg-slate-600 text-slate-300 rounded-xl font-black uppercase tracking-widest text-xs transition-all"
+                  >
+                    Cancel
+                  </button>
+                </div>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
 
       {/* Bottom Nav */}
       <nav className="fixed bottom-0 inset-x-0 bg-[#1e293b] border-t border-slate-700 p-4 flex justify-around items-center md:hidden">

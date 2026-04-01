@@ -10,6 +10,7 @@ export interface Habit {
   category: 'Quest' | 'Daily' | 'Skill';
   requiresApproval?: boolean;
   parentId?: string;
+  childId?: string; // The child this habit belongs to
   createdAt?: string;
 }
 
